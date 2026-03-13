@@ -88,24 +88,43 @@ function checkAndScheduleReminders(bills) {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   const today = new Date(); today.setHours(0,0,0,0);
   const year = today.getFullYear(), month = today.getMonth()+1;
+  const payKey = `${year}-${month}`;
+
   bills.forEach(bill => {
     if (!bill.reminderDays || bill.reminderDays === 0) return;
-    const payKey = `${year}-${month}`;
-    if (bill.payments?.[payKey]) return;
-    const dueDate = new Date(`${year}-${String(month).padStart(2,"0")}-${String(bill.dueDay||1).padStart(2,"0")}`);
+    if (bill.payments?.[payKey]) return; // ya pagado este mes
+
+    // Fecha de vencimiento real del mes actual
+    const dueDay = Math.min(bill.dueDay||1, new Date(year, month, 0).getDate()); // evita día 31 en meses cortos
+    const dueDate = new Date(year, month-1, dueDay);
     dueDate.setHours(0,0,0,0);
-    const daysUntil = Math.round((dueDate - today) / 86400000);
-    if (daysUntil === parseInt(bill.reminderDays) || daysUntil === 0) {
-      const msg = daysUntil === 0
-        ? `⚠️ ${bill.name} vence HOY`
-        : `📅 ${bill.name} vence en ${daysUntil} día${daysUntil!==1?"s":""}`;
+
+    const daysUntilDue = Math.round((dueDate - today) / 86400000);
+    const reminderDays = parseInt(bill.reminderDays);
+
+    // Disparar si hoy es exactamente el día del recordatorio, o si ya pasó pero no se notificó aún (dentro de ventana de 1 día)
+    const shouldNotify = daysUntilDue === reminderDays || daysUntilDue === 0;
+
+    if (shouldNotify) {
+      let msg;
+      if (daysUntilDue <= 0) {
+        msg = daysUntilDue === 0
+          ? `⚠️ ${bill.name} vence HOY (día ${dueDay})`
+          : `🔴 ${bill.name} venció hace ${Math.abs(daysUntilDue)} día${Math.abs(daysUntilDue)!==1?"s":""}`;
+      } else {
+        msg = `📅 ${bill.name} vence el día ${dueDay} — en ${daysUntilDue} día${daysUntilDue!==1?"s":""}`;
+      }
+
       navigator.serviceWorker.ready.then(reg => {
-        reg.showNotification("💰 PagosApp — Recordatorio", {
-          body: msg, icon: "/icon.svg", badge: "/icon.svg",
-          tag: `reminder-${bill.id}-${payKey}`, data: { billId: bill.id },
+        reg.showNotification("💰 PagosApp — Recordatorio de pago", {
+          body: msg,
+          icon: "/icon.svg",
+          badge: "/icon.svg",
+          tag: `reminder-${bill.id}-${payKey}-${daysUntilDue}`,
+          data: { billId: bill.id },
           actions: [{ action: "open", title: "Ver cuentas" }]
         });
-      }).catch(() => { new Notification("💰 PagosApp", { body: msg }); });
+      }).catch(() => { try { new Notification("💰 PagosApp", { body: msg }); } catch(e){} });
     }
   });
 }
@@ -845,11 +864,35 @@ export default function App() {
     showToast("Pago revertido","info");
   }
 
-  const monthBills=bills.filter(b=>b.recurrent||b.payments?.[`${viewYear}-${viewMonth}`]);
-  const totalEst=monthBills.reduce((s,b)=>s+(b.amount||0),0);
-  const totalPaid=monthBills.reduce((s,b)=>s+(b.payments?.[`${viewYear}-${viewMonth}`]?.amount||0),0);
-  const pct=totalEst>0?Math.round((totalPaid/totalEst)*100):0;
-  const pendientes=monthBills.filter(b=>!b.payments?.[`${viewYear}-${viewMonth}`]).length;
+  const nowYear=today.getFullYear(), nowMonth=today.getMonth()+1;
+  const viewKey=`${viewYear}-${viewMonth}`;
+  const isPastMonth=(viewYear<nowYear)||(viewYear===nowYear&&viewMonth<nowMonth);
+  const isFutureMonth=(viewYear>nowYear)||(viewYear===nowYear&&viewMonth>nowMonth);
+
+  // Meses pasados: solo mostrar cuentas con pago registrado
+  // Mes actual y futuros: mostrar todas las recurrentes
+  const monthBills=bills.filter(b=>{
+    if(isPastMonth) return !!b.payments?.[viewKey]; // solo las que tienen pago real
+    return b.recurrent||b.payments?.[viewKey];
+  });
+
+  // totalPaid: suma de montos realmente pagados este mes
+  const totalPaid=monthBills.reduce((s,b)=>s+(b.payments?.[viewKey]?.amount||0),0);
+
+  // totalEst: para meses pasados usamos lo que se pagó (ya cerrado)
+  //           para mes actual/futuro usamos el estimado SOLO como referencia visual
+  //           pero el % se calcula sobre cuentas pagadas vs total de cuentas (no montos)
+  const totalEstRef=monthBills.reduce((s,b)=>s+(b.amount||0),0); // solo referencia
+  
+  const totalCuentas=monthBills.length;
+  const cuentasPagadas=monthBills.filter(b=>b.payments?.[viewKey]).length;
+  
+  // pct basado en cantidad de cuentas pagadas, no en montos (evita distorsión por monto variable)
+  const pct=totalCuentas>0?Math.round((cuentasPagadas/totalCuentas)*100):isPastMonth?100:0;
+  const pendientes=isPastMonth?0:monthBills.filter(b=>!b.payments?.[viewKey]).length;
+  
+  // Para mostrar en tarjetas
+  const totalEst=isPastMonth?totalPaid:totalEstRef;
 
   if (loading) return <><style>{CSS}</style><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#090d18",color:"#00e5ff",fontFamily:"Syne,sans-serif",fontSize:20,gap:14}}><span className="spinner" style={{width:28,height:28,borderWidth:3}}/>Cargando...</div></>;
   if (!user) return <><style>{CSS}</style><AuthScreen onLogin={handleLogin}/></>;
@@ -932,10 +975,10 @@ export default function App() {
             )}
             <ProgressRing pct={pct}/>
             <div className="dash-grid">
-              <div className="dash-card"><div className="dash-label">Total estimado</div><div className="dash-value c-accent" style={{fontSize:19}}>{formatCurrency(totalEst)}</div></div>
-              <div className="dash-card"><div className="dash-label">Total pagado</div><div className="dash-value c-success" style={{fontSize:19}}>{formatCurrency(totalPaid)}</div></div>
-              <div className="dash-card"><div className="dash-label">Pendientes</div><div className={`dash-value ${pendientes>0?"c-warning":"c-success"}`}>{pendientes}</div></div>
-              <div className="dash-card"><div className="dash-label">Cuentas totales</div><div className="dash-value">{bills.length}</div></div>
+              {!isPastMonth&&<div className="dash-card"><div className="dash-label">Estimado del mes</div><div className="dash-value c-accent" style={{fontSize:18}}>{formatCurrency(totalEstRef)}</div></div>}
+              <div className="dash-card"><div className="dash-label">{isPastMonth?"Total pagado":"Pagado hasta ahora"}</div><div className="dash-value c-success" style={{fontSize:18}}>{formatCurrency(totalPaid)}</div></div>
+              <div className="dash-card"><div className="dash-label">Cuentas pagadas</div><div className={`dash-value ${cuentasPagadas===totalCuentas?"c-success":"c-warning"}`}>{cuentasPagadas}/{totalCuentas}</div></div>
+              {!isPastMonth&&<div className="dash-card"><div className="dash-label">Pendientes</div><div className={`dash-value ${pendientes>0?"c-warning":"c-success"}`}>{pendientes}</div></div>}
             </div>
           </>
         )}
@@ -955,7 +998,7 @@ export default function App() {
                 <div className="bill-meta">Vence día {bill.dueDay} · {getCatLabel(bill.category)}{pay&&<span style={{marginLeft:8,color:"var(--success)"}}>· Pagado {formatDate(pay.date)}</span>}{bill.reminderDays>0&&<span className="reminder-badge">🔔 {bill.reminderDays}d antes</span>}</div>
                 <span className={`badge badge-${status}`}>{status==="paid"?"Pagado":status==="overdue"?"Vencido":status==="upcoming"?"Próximo":"Pendiente"}</span>
               </div>
-              <div className="bill-amount" style={{color:status==="paid"?"var(--success)":status==="overdue"?"var(--danger)":"var(--text)"}}>{formatCurrency(pay?pay.amount:bill.amount)}</div>
+              <div className="bill-amount" style={{color:status==="paid"?"var(--success)":status==="overdue"?"var(--danger)":isFutureMonth?"var(--muted)":"var(--text)"}}>{formatCurrency(pay?pay.amount:bill.amount)}</div>
               <div className="bill-actions">
                 {status!=="paid"?<button className="btn btn-success btn-sm" onClick={()=>setModal({type:"pay",data:bill})}>Pagar</button>:<button className="btn btn-secondary btn-sm" onClick={()=>removePayment(bill,viewYear,viewMonth)}>↩</button>}
                 <button className="btn btn-secondary btn-sm" onClick={()=>setModal({type:"bill",data:bill})}>✏️</button>
