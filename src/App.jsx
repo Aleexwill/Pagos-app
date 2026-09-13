@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import {
   doc, getDoc, setDoc, deleteDoc, collection, getDocs
 } from "firebase/firestore";
@@ -6,7 +6,7 @@ import { db, messaging, getToken, onMessage, VAPID_KEY } from "./firebase.js";
 
 // ─── ADMIN CREDENTIALS ───────────────────────────────────────────────────────
 const ADMIN_USER = "admin";
-const ADMIN_DEFAULT_PASS = "admin2026"; // solo usado la primera vez
+const ADMIN_DEFAULT_PASS = "admin2026";
 
 async function fbGetAdminConfig() {
   try {
@@ -29,42 +29,49 @@ const CATEGORIES = [
   { id: "taxes",        label: "Impuestos",    emoji: "🏛️" },
   { id: "other",        label: "Otro",         emoji: "📋" },
 ];
+
+const INCOME_CATEGORIES = [
+  { id: "salary",     label: "Salario",           emoji: "💼" },
+  { id: "freelance",  label: "Freelance",          emoji: "💻" },
+  { id: "rental",     label: "Alquiler cobrado",   emoji: "🏘️" },
+  { id: "investment", label: "Inversión",          emoji: "📈" },
+  { id: "bonus",      label: "Bonificación",       emoji: "🎁" },
+  { id: "other",      label: "Otro",               emoji: "💵" },
+];
+
 const MONTHS_FULL = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
-const getCatEmoji = id => CATEGORIES.find(c => c.id === id)?.emoji || "📋";
-const getCatLabel = id => CATEGORIES.find(c => c.id === id)?.label || "Otro";
+const getCatEmoji   = id => CATEGORIES.find(c => c.id === id)?.emoji || "📋";
+const getCatLabel   = id => CATEGORIES.find(c => c.id === id)?.label || "Otro";
+const getIncCatEmoji = id => INCOME_CATEGORIES.find(c => c.id === id)?.emoji || "💵";
+const getIncCatLabel = id => INCOME_CATEGORIES.find(c => c.id === id)?.label || "Otro";
 const formatCurrency = n => new Intl.NumberFormat("es-PY",{style:"currency",currency:"PYG",maximumFractionDigits:0}).format(n||0);
 const formatDate = d => { if(!d) return "—"; const [y,m,dd]=d.split("-"); return `${dd}/${m}/${y}`; };
 
-// ─── FIREBASE HELPERS ────────────────────────────────────────────────────────
+// ─── FIREBASE HELPERS — USERS ─────────────────────────────────────────────────
 async function fbGetUser(username) {
-  try {
-    const snap = await getDoc(doc(db, "users", username));
-    return snap.exists() ? snap.data() : null;
-  } catch { return null; }
+  try { const snap = await getDoc(doc(db,"users",username)); return snap.exists()?snap.data():null; } catch { return null; }
 }
-async function fbSetUser(username, data) {
-  await setDoc(doc(db, "users", username), data);
-}
-async function fbGetBills(username) {
-  try {
-    const snap = await getDoc(doc(db, "bills", username));
-    return snap.exists() ? (snap.data().list || []) : [];
-  } catch { return []; }
-}
-async function fbSetBills(username, bills) {
-  await setDoc(doc(db, "bills", username), { list: bills });
+async function fbSetUser(username, data) { await setDoc(doc(db,"users",username),data); }
+async function fbGetAllUsers() {
+  try { const snap = await getDocs(collection(db,"users")); return snap.docs.map(d=>d.data()); } catch { return []; }
 }
 async function fbDeleteUser(username) {
-  await deleteDoc(doc(db, "users", username));
-  await deleteDoc(doc(db, "bills", username));
-}
-async function fbGetAllUsers() {
-  try {
-    const snap = await getDocs(collection(db, "users"));
-    return snap.docs.map(d => d.data());
-  } catch { return []; }
+  await deleteDoc(doc(db,"users",username));
+  await deleteDoc(doc(db,"bills",username));
+  await deleteDoc(doc(db,"income",username));
 }
 
+// ─── FIREBASE HELPERS — BILLS ─────────────────────────────────────────────────
+async function fbGetBills(username) {
+  try { const snap = await getDoc(doc(db,"bills",username)); return snap.exists()?(snap.data().list||[]):[]; } catch { return []; }
+}
+async function fbSetBills(username, bills) { await setDoc(doc(db,"bills",username),{list:bills}); }
+
+// ─── FIREBASE HELPERS — INCOME ────────────────────────────────────────────────
+async function fbGetIncome(username) {
+  try { const snap = await getDoc(doc(db,"income",username)); return snap.exists()?(snap.data().list||[]):[]; } catch { return []; }
+}
+async function fbSetIncome(username, incomes) { await setDoc(doc(db,"income",username),{list:incomes}); }
 
 // ─── NOTIFICATION HELPERS ─────────────────────────────────────────────────────
 async function requestNotificationPermission() {
@@ -81,7 +88,7 @@ async function requestNotificationPermission() {
 }
 
 async function fbSaveFCMToken(username, token) {
-  await setDoc(doc(db, "fcm_tokens", username), { token, updatedAt: new Date().toISOString() });
+  await setDoc(doc(db,"fcm_tokens",username),{ token, updatedAt: new Date().toISOString() });
 }
 
 function checkAndScheduleReminders(bills) {
@@ -89,40 +96,22 @@ function checkAndScheduleReminders(bills) {
   const today = new Date(); today.setHours(0,0,0,0);
   const year = today.getFullYear(), month = today.getMonth()+1;
   const payKey = `${year}-${month}`;
-
   bills.forEach(bill => {
     if (!bill.reminderDays || bill.reminderDays === 0) return;
-    if (bill.payments?.[payKey]) return; // ya pagado este mes
-
-    // Fecha de vencimiento real del mes actual
-    const dueDay = Math.min(bill.dueDay||1, new Date(year, month, 0).getDate()); // evita día 31 en meses cortos
-    const dueDate = new Date(year, month-1, dueDay);
-    dueDate.setHours(0,0,0,0);
-
+    if (bill.payments?.[payKey]) return;
+    const dueDay = Math.min(bill.dueDay||1, new Date(year, month, 0).getDate());
+    const dueDate = new Date(year, month-1, dueDay); dueDate.setHours(0,0,0,0);
     const daysUntilDue = Math.round((dueDate - today) / 86400000);
-    const reminderDays = parseInt(bill.reminderDays);
-
-    // Disparar si hoy es exactamente el día del recordatorio, o si ya pasó pero no se notificó aún (dentro de ventana de 1 día)
-    const shouldNotify = daysUntilDue === reminderDays || daysUntilDue === 0;
-
+    const shouldNotify = daysUntilDue === parseInt(bill.reminderDays) || daysUntilDue === 0;
     if (shouldNotify) {
-      let msg;
-      if (daysUntilDue <= 0) {
-        msg = daysUntilDue === 0
-          ? `⚠️ ${bill.name} vence HOY (día ${dueDay})`
-          : `🔴 ${bill.name} venció hace ${Math.abs(daysUntilDue)} día${Math.abs(daysUntilDue)!==1?"s":""}`;
-      } else {
-        msg = `📅 ${bill.name} vence el día ${dueDay} — en ${daysUntilDue} día${daysUntilDue!==1?"s":""}`;
-      }
-
+      const msg = daysUntilDue <= 0
+        ? (daysUntilDue === 0 ? `⚠️ ${bill.name} vence HOY (día ${dueDay})` : `🔴 ${bill.name} venció hace ${Math.abs(daysUntilDue)} día${Math.abs(daysUntilDue)!==1?"s":""}`)
+        : `📅 ${bill.name} vence el día ${dueDay} — en ${daysUntilDue} día${daysUntilDue!==1?"s":""}`;
       navigator.serviceWorker.ready.then(reg => {
         reg.showNotification("💰 PagosApp — Recordatorio de pago", {
-          body: msg,
-          icon: "/icon.svg",
-          badge: "/icon.svg",
+          body: msg, icon: "/icon.svg", badge: "/icon.svg",
           tag: `reminder-${bill.id}-${payKey}-${daysUntilDue}`,
-          data: { billId: bill.id },
-          actions: [{ action: "open", title: "Ver cuentas" }]
+          data: { billId: bill.id }, actions: [{ action:"open", title:"Ver cuentas" }]
         });
       }).catch(() => { try { new Notification("💰 PagosApp", { body: msg }); } catch(e){} });
     }
@@ -136,7 +125,7 @@ const CSS = `
 :root{
   --bg:#090d18;--surface:#101623;--surface2:#18203a;--border:#1e2d47;
   --accent:#00e5ff;--accent2:#7c3aed;--gold:#f59e0b;
-  --success:#10b981;--warning:#f59e0b;--danger:#ef4444;
+  --success:#10b981;--warning:#f59e0b;--danger:#ef4444;--income:#22d3ee;
   --text:#e2e8f0;--muted:#64748b;
   --fh:'Syne',sans-serif;--fb:'DM Sans',sans-serif;
 }
@@ -162,8 +151,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 .btn-primary{background:var(--accent);color:#000}.btn-primary:hover{background:#33eaff;transform:translateY(-1px);box-shadow:0 4px 20px rgba(0,229,255,.25)}
 .btn-secondary{background:var(--surface2);color:var(--text);border:1px solid var(--border)}.btn-secondary:hover{border-color:var(--accent)}
 .btn-danger{background:rgba(239,68,68,.12);color:var(--danger);border:1px solid rgba(239,68,68,.25)}.btn-danger:hover{background:rgba(239,68,68,.22)}
-.btn-success{background:rgba(16,185,129,.12);color:var(--success);border:1px solid rgba(16,185,129,.25)}
+.btn-success{background:rgba(16,185,129,.12);color:var(--success);border:1px solid rgba(16,185,129,.25)}.btn-success:hover{background:rgba(16,185,129,.22)}
 .btn-gold{background:rgba(245,158,11,.12);color:var(--gold);border:1px solid rgba(245,158,11,.25)}.btn-gold:hover{background:rgba(245,158,11,.22)}
+.btn-income{background:rgba(34,211,238,.15);color:var(--income);border:1px solid rgba(34,211,238,.3)}.btn-income:hover{background:rgba(34,211,238,.25)}
 .btn-full{width:100%}.btn-sm{padding:6px 12px;font-size:12px;border-radius:8px}
 .header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 20px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;backdrop-filter:blur(12px)}
 .header-logo{font-family:var(--fh);font-size:18px;font-weight:800;color:var(--accent)}
@@ -173,19 +163,30 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 .admin-badge{background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);color:var(--gold);font-size:10px;font-weight:700;padding:3px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.08em}
 .nav{display:flex;gap:4px;padding:10px 20px;border-bottom:1px solid var(--border);background:var(--surface);overflow-x:auto}
 .nav-btn{padding:7px 16px;border-radius:8px;border:none;background:transparent;color:var(--muted);cursor:pointer;font-family:var(--fb);font-size:13px;font-weight:500;white-space:nowrap;transition:all .2s}
-.nav-btn.active{background:var(--surface2);color:var(--accent)}.nav-btn.admin-nav.active{color:var(--gold)}
+.nav-btn.active{background:var(--surface2);color:var(--accent)}
+.nav-btn.admin-nav.active{color:var(--gold)}
+.nav-btn.income-nav.active{color:var(--income)}
 .main{flex:1;padding:20px;max-width:960px;margin:0 auto;width:100%}
 .dash-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:14px;margin-bottom:24px}
 .dash-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;animation:fadeUp .4s ease}
 .dash-card.gold{border-color:rgba(245,158,11,.2);background:linear-gradient(135deg,rgba(245,158,11,.04),var(--surface))}
+.dash-card.income-card{border-color:rgba(34,211,238,.2);background:linear-gradient(135deg,rgba(34,211,238,.04),var(--surface))}
+.dash-card.balance-pos{border-color:rgba(16,185,129,.35);background:linear-gradient(135deg,rgba(16,185,129,.07),var(--surface));grid-column:1/-1}
+.dash-card.balance-neg{border-color:rgba(239,68,68,.35);background:linear-gradient(135deg,rgba(239,68,68,.07),var(--surface));grid-column:1/-1}
 .dash-label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
 .dash-value{font-family:var(--fh);font-size:26px;font-weight:700}
-.c-accent{color:var(--accent)}.c-success{color:var(--success)}.c-warning{color:var(--warning)}.c-danger{color:var(--danger)}.c-gold{color:var(--gold)}
+.c-accent{color:var(--accent)}.c-success{color:var(--success)}.c-warning{color:var(--warning)}.c-danger{color:var(--danger)}.c-gold{color:var(--gold)}.c-income{color:var(--income)}
 .ring-wrap{display:flex;align-items:center;justify-content:center;margin:4px 0 20px}
 .bills-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:16px}
 .section-title{font-family:var(--fh);font-size:18px;font-weight:700}
 .bill-item{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:15px;margin-bottom:10px;display:flex;align-items:center;gap:12px;transition:transform .15s;animation:fadeUp .3s ease}
-.bill-item:hover{transform:translateX(2px)}.bill-item.paid{border-left:3px solid var(--success)}.bill-item.overdue{border-left:3px solid var(--danger)}.bill-item.upcoming{border-left:3px solid var(--warning)}
+.bill-item:hover{transform:translateX(2px)}
+.bill-item.paid{border-left:3px solid var(--success)}.bill-item.overdue{border-left:3px solid var(--danger)}.bill-item.upcoming{border-left:3px solid var(--warning)}
+.income-item{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:15px;margin-bottom:10px;display:flex;align-items:center;gap:12px;transition:transform .15s;animation:fadeUp .3s ease}
+.income-item:hover{transform:translateX(2px)}
+.income-item.received{border-left:3px solid var(--income)}
+.income-item.pending{border-left:3px solid var(--muted)}
+.income-item.upcoming{border-left:3px solid rgba(34,211,238,.35)}
 .bill-icon{width:40px;height:40px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:19px;flex-shrink:0;background:var(--surface2)}
 .bill-info{flex:1;min-width:0}.bill-name{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bill-meta{font-size:12px;color:var(--muted);margin-top:2px}.bill-amount{font-family:var(--fh);font-size:16px;font-weight:700;text-align:right;margin-right:8px;white-space:nowrap}
@@ -194,6 +195,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 .badge-paid{background:rgba(16,185,129,.15);color:var(--success)}.badge-overdue{background:rgba(239,68,68,.15);color:var(--danger)}
 .badge-upcoming{background:rgba(245,158,11,.15);color:var(--warning)}.badge-pending{background:rgba(100,116,139,.15);color:var(--muted)}
 .badge-suspended{background:rgba(239,68,68,.12);color:var(--danger)}.badge-active{background:rgba(16,185,129,.12);color:var(--success)}
+.badge-received{background:rgba(34,211,238,.15);color:var(--income)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;z-index:200;padding:20px;animation:fadeIn .2s ease}
 .modal{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:28px;width:100%;max-width:460px;max-height:90vh;overflow-y:auto;animation:scaleIn .25s ease}
 .modal-title{font-family:var(--fh);font-size:20px;font-weight:700;margin-bottom:20px}
@@ -229,6 +231,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 .empty-icon{font-size:46px;margin-bottom:14px}.empty-title{font-family:var(--fh);font-size:17px;color:var(--text);margin-bottom:8px}
 .toast{position:fixed;bottom:24px;right:24px;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:12px 18px;font-size:14px;z-index:999;animation:fadeUp .3s ease;display:flex;align-items:center;gap:10px;box-shadow:0 4px 20px rgba(0,0,0,.4)}
 .search-bar{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:9px 14px;color:var(--text);font-family:var(--fb);font-size:14px;outline:none;width:100%;margin-bottom:16px;transition:border .2s}
+.search-bar:focus{border-color:var(--accent)}
 .notif-banner{display:flex;align-items:center;gap:14px;background:linear-gradient(135deg,rgba(124,58,237,.08),rgba(0,229,255,.04));border:1px solid rgba(124,58,237,.25);border-radius:14px;padding:16px;margin-bottom:20px;animation:fadeUp .4s ease}
 .notif-banner-icon{font-size:28px;flex-shrink:0}
 .notif-banner-title{font-family:var(--fh);font-size:14px;font-weight:700;color:var(--accent)}
@@ -238,14 +241,32 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 .notif-off{background:rgba(100,116,139,.12);color:var(--muted)}
 .notif-blocked{background:rgba(239,68,68,.12);color:var(--danger)}
 .reminder-badge{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:3px 8px;border-radius:20px;background:rgba(124,58,237,.15);color:#a78bfa;margin-left:6px}
-
-.search-bar:focus{border-color:var(--accent)}
 .spinner{display:inline-block;width:18px;height:18px;border:2px solid rgba(0,229,255,.3);border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes scaleIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
-@media(max-width:520px){.main{padding:12px}.dash-grid{grid-template-columns:1fr 1fr}.bill-actions{flex-direction:column}}
+@media(max-width:520px){.main{padding:12px}.dash-grid{grid-template-columns:1fr 1fr}.bill-actions{flex-direction:column}.dash-card.balance-pos,.dash-card.balance-neg{grid-column:unset}}
+
+/* ── Light theme ── */
+.light{
+  --bg:#f0f5ff;--surface:#ffffff;--surface2:#eef2ff;--border:#d4ddf7;
+  --text:#0f172a;--muted:#64748b;
+}
+.light body{background:var(--bg);color:var(--text)}
+.light .auth-wrap{background:radial-gradient(ellipse at 25% 25%,#dbeafe 0%,var(--bg) 55%),radial-gradient(ellipse at 80% 75%,#ede9fe 0%,transparent 50%)}
+.light .field input,.light .field select{background:var(--surface2);border-color:var(--border);color:var(--text)}
+.light .field select option{background:var(--surface)}
+.light .search-bar{background:var(--surface2);color:var(--text)}
+.light .modal{box-shadow:0 8px 40px rgba(0,0,0,.12)}
+.light .summary-bar{background:var(--surface2)}
+.light .toast{box-shadow:0 4px 20px rgba(0,0,0,.12)}
+.light .user-stat{background:var(--surface2)}
+.light .btn-secondary{background:var(--surface2);color:var(--text);border-color:var(--border)}
+.light .btn-secondary:hover{background:var(--border)}
+.light .notif-banner{background:linear-gradient(135deg,rgba(99,102,241,.07),rgba(0,229,255,.03));border-color:rgba(99,102,241,.2)}
+.theme-btn{width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:var(--surface2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .2s;flex-shrink:0}
+.theme-btn:hover{background:var(--border)}
 `;
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -258,6 +279,17 @@ function getBillStatus(bill, year, month) {
   if ((due - today) / 86400000 <= 5) return "upcoming";
   return "pending";
 }
+
+function getIncomeStatus(income, year, month) {
+  const key = `${year}-${month}`;
+  if (income.receipts?.[key]) return "received";
+  const today = new Date();
+  const day = Math.min(income.receiveDay||1, new Date(year, month, 0).getDate());
+  const due = new Date(year, month-1, day);
+  if (due < today) return "pending";
+  return "upcoming";
+}
+
 function userColor(name) {
   const colors = ["linear-gradient(135deg,#7c3aed,#a78bfa)","linear-gradient(135deg,#0369a1,#38bdf8)","linear-gradient(135deg,#065f46,#34d399)","linear-gradient(135deg,#9d174d,#f472b6)","linear-gradient(135deg,#92400e,#fbbf24)","linear-gradient(135deg,#1e3a5f,#00e5ff)"];
   let h=0; for(let i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))%colors.length;
@@ -292,7 +324,6 @@ function AuthScreen({ onLogin }) {
   const [form, setForm] = useState({ username:"", password:"", name:"" });
   const [adminPass, setAdminPass] = useState("");
   const [showAdmin, setShowAdmin] = useState(false);
-  // first-login change password state
   const [mustChange, setMustChange] = useState(false);
   const [newPass1, setNewPass1] = useState("");
   const [newPass2, setNewPass2] = useState("");
@@ -324,19 +355,10 @@ function AuthScreen({ onLogin }) {
   async function handleAdminLogin() {
     setError(""); setBusy(true);
     try {
-      // Check if a custom password has been saved in Firebase
       const config = await fbGetAdminConfig();
       const currentPass = config?.password || ADMIN_DEFAULT_PASS;
-      const isFirstLogin = !config?.password;
-
       if (adminPass !== currentPass) { setError("Contraseña maestra incorrecta"); return; }
-
-      if (isFirstLogin) {
-        // First time — force password change before entering
-        setMustChange(true);
-      } else {
-        onLogin({ username:ADMIN_USER, name:"Administrador", isAdmin:true });
-      }
+      if (!config?.password) { setMustChange(true); } else { onLogin({ username:ADMIN_USER, name:"Administrador", isAdmin:true }); }
     } catch(e) { setError("Error: "+e.message); }
     finally { setBusy(false); }
   }
@@ -354,7 +376,6 @@ function AuthScreen({ onLogin }) {
     finally { setBusy(false); }
   }
 
-  // ── Pantalla de cambio obligatorio de contraseña ──
   if (mustChange) {
     return (
       <div className="auth-wrap">
@@ -367,19 +388,10 @@ function AuthScreen({ onLogin }) {
           <div style={{background:"rgba(245,158,11,.07)",border:"1px solid rgba(245,158,11,.2)",borderRadius:12,padding:"12px 16px",fontSize:12,color:"var(--gold)",marginBottom:20}}>
             ⚠️ Una vez que la cambies, la contraseña <strong>admin2026</strong> dejará de funcionar.
           </div>
-          <div className="field">
-            <label>Nueva contraseña maestra</label>
-            <input type="password" value={newPass1} onChange={e=>setNewPass1(e.target.value)} placeholder="Mínimo 6 caracteres" style={{borderColor:"rgba(245,158,11,.4)"}}/>
-          </div>
-          <div className="field">
-            <label>Repetir contraseña</label>
-            <input type="password" value={newPass2} onChange={e=>setNewPass2(e.target.value)} placeholder="Repetí la contraseña"
-              style={{borderColor:"rgba(245,158,11,.4)"}} onKeyDown={e=>e.key==="Enter"&&handleChangeAdminPass()}/>
-          </div>
+          <div className="field"><label>Nueva contraseña maestra</label><input type="password" value={newPass1} onChange={e=>setNewPass1(e.target.value)} placeholder="Mínimo 6 caracteres" style={{borderColor:"rgba(245,158,11,.4)"}}/></div>
+          <div className="field"><label>Repetir contraseña</label><input type="password" value={newPass2} onChange={e=>setNewPass2(e.target.value)} placeholder="Repetí la contraseña" style={{borderColor:"rgba(245,158,11,.4)"}} onKeyDown={e=>e.key==="Enter"&&handleChangeAdminPass()}/></div>
           {error&&<div style={{color:"var(--danger)",fontSize:13,marginBottom:12}}>⚠️ {error}</div>}
-          <button className="btn btn-gold btn-full" onClick={handleChangeAdminPass} disabled={busy}>
-            {busy?<span className="spinner"/>:"✅ Guardar y entrar"}
-          </button>
+          <button className="btn btn-gold btn-full" onClick={handleChangeAdminPass} disabled={busy}>{busy?<span className="spinner"/>:"✅ Guardar y entrar"}</button>
         </div>
       </div>
     );
@@ -400,9 +412,7 @@ function AuthScreen({ onLogin }) {
             <div className="field"><label>Usuario</label><input value={form.username} onChange={e=>setForm(f=>({...f,username:e.target.value}))} placeholder="usuario"/></div>
             <div className="field"><label>Contraseña</label><input type="password" value={form.password} onChange={e=>setForm(f=>({...f,password:e.target.value}))} placeholder="••••••" onKeyDown={e=>e.key==="Enter"&&handleSubmit()}/></div>
             {error&&<div style={{color:"var(--danger)",fontSize:13,marginBottom:12}}>⚠️ {error}</div>}
-            <button className="btn btn-primary btn-full" onClick={handleSubmit} disabled={busy} style={{marginBottom:16}}>
-              {busy?<span className="spinner"/>:(tab==="login"?"Ingresar":"Crear cuenta")}
-            </button>
+            <button className="btn btn-primary btn-full" onClick={handleSubmit} disabled={busy} style={{marginBottom:16}}>{busy?<span className="spinner"/>:(tab==="login"?"Ingresar":"Crear cuenta")}</button>
             <div className="auth-divider">acceso especial</div>
             <button className="admin-btn" onClick={()=>{setShowAdmin(true);setError("")}}>🔐 Acceso Administrador</button>
           </>
@@ -435,7 +445,7 @@ function BillModal({ bill, onSave, onClose, notifEnabled }) {
   return (
     <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
       <div className="modal">
-        <div className="modal-title">{bill?"✏️ Editar cuenta":"➕ Nueva cuenta"}</div>
+        <div className="modal-title">{bill?"✏️ Editar gasto":"➕ Nuevo gasto"}</div>
         <div className="field"><label>Nombre</label><input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Ej: Luz, Internet..."/></div>
         <div className="field"><label>Categoría</label>
           <select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))}>
@@ -451,15 +461,12 @@ function BillModal({ bill, onSave, onClose, notifEnabled }) {
         </div>
         <div className="field">
           <label>🔔 Recordatorio</label>
-          {!notifEnabled && <div style={{fontSize:11,color:"var(--warning)",marginBottom:6}}>⚠️ Activá las notificaciones para recibir recordatorios</div>}
+          {!notifEnabled&&<div style={{fontSize:11,color:"var(--warning)",marginBottom:6}}>⚠️ Activá las notificaciones para recibir recordatorios</div>}
           <select value={form.reminderDays||0} onChange={e=>setForm(f=>({...f,reminderDays:e.target.value}))} disabled={!notifEnabled}>
             <option value="0">Sin recordatorio</option>
-            <option value="1">1 día antes</option>
-            <option value="2">2 días antes</option>
-            <option value="3">3 días antes</option>
-            <option value="5">5 días antes</option>
-            <option value="7">7 días antes</option>
-            <option value="10">10 días antes</option>
+            <option value="1">1 día antes</option><option value="2">2 días antes</option>
+            <option value="3">3 días antes</option><option value="5">5 días antes</option>
+            <option value="7">7 días antes</option><option value="10">10 días antes</option>
           </select>
         </div>
         <div className="field"><label>Notas</label><input value={form.notes||""} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} placeholder="Opcional..."/></div>
@@ -495,6 +502,63 @@ function PayModal({ bill, year, month, onSave, onClose }) {
   );
 }
 
+// ─── INCOME MODAL ─────────────────────────────────────────────────────────────
+function IncomeModal({ income, onSave, onClose }) {
+  const [form, setForm] = useState(income||{name:"",category:"salary",amount:"",receiveDay:"25",recurrent:true,notes:""});
+  function save() {
+    if(!form.name||!form.amount) return;
+    onSave({...form,amount:parseFloat(form.amount),receiveDay:parseInt(form.receiveDay)||25,id:form.id||Date.now().toString()});
+  }
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title" style={{color:"var(--income)"}}>{income?"✏️ Editar ingreso":"💵 Nuevo ingreso"}</div>
+        <div className="field"><label>Nombre</label><input value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))} placeholder="Ej: Salario, Proyecto freelance..."/></div>
+        <div className="field"><label>Categoría</label>
+          <select value={form.category} onChange={e=>setForm(f=>({...f,category:e.target.value}))} style={{borderColor:"rgba(34,211,238,.3)"}}>
+            {INCOME_CATEGORIES.map(c=><option key={c.id} value={c.id}>{c.emoji} {c.label}</option>)}
+          </select>
+        </div>
+        <div className="field"><label>Monto estimado (Gs.)</label><input type="number" value={form.amount} onChange={e=>setForm(f=>({...f,amount:e.target.value}))} placeholder="0" style={{borderColor:"rgba(34,211,238,.3)"}}/></div>
+        <div className="field"><label>Día de cobro esperado</label><input type="number" min="1" max="31" value={form.receiveDay} onChange={e=>setForm(f=>({...f,receiveDay:e.target.value}))} style={{borderColor:"rgba(34,211,238,.3)"}}/></div>
+        <div className="field"><label>¿Recurrente mensual?</label>
+          <select value={form.recurrent?"yes":"no"} onChange={e=>setForm(f=>({...f,recurrent:e.target.value==="yes"}))}>
+            <option value="yes">Sí, todos los meses</option><option value="no">No, solo este mes</option>
+          </select>
+        </div>
+        <div className="field"><label>Notas</label><input value={form.notes||""} onChange={e=>setForm(f=>({...f,notes:e.target.value}))} placeholder="Opcional..."/></div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-income" onClick={save}>Guardar</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── RECEIVE MODAL ────────────────────────────────────────────────────────────
+function ReceiveModal({ income, year, month, onSave, onClose }) {
+  const key=`${year}-${month}`, ex=income.receipts?.[key];
+  const [amount,setAmount]=useState(ex?.amount||income.amount||"");
+  const [date,setDate]=useState(ex?.date||new Date().toISOString().slice(0,10));
+  const [notes,setNotes]=useState(ex?.notes||"");
+  return (
+    <div className="overlay" onClick={e=>e.target===e.currentTarget&&onClose()}>
+      <div className="modal">
+        <div className="modal-title" style={{color:"var(--income)"}}>💵 Registrar ingreso</div>
+        <div style={{color:"var(--muted)",fontSize:13,marginBottom:18}}>{getIncCatEmoji(income.category)} {income.name} — {MONTHS_FULL[month-1]} {year}</div>
+        <div className="field"><label>Monto recibido (Gs.)</label><input type="number" value={amount} onChange={e=>setAmount(e.target.value)} style={{borderColor:"rgba(34,211,238,.3)"}}/></div>
+        <div className="field"><label>Fecha de cobro</label><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+        <div className="field"><label>Notas (opcional)</label><input value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Ej: bonus incluido..."/></div>
+        <div className="modal-footer">
+          <button className="btn btn-secondary" onClick={onClose}>Cancelar</button>
+          <button className="btn btn-income" onClick={()=>onSave({amount:parseFloat(amount),date,notes})}>✅ Confirmar ingreso</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── ADMIN PANEL ──────────────────────────────────────────────────────────────
 function AdminPanel({ showToast }) {
   const [users, setUsers] = useState([]);
@@ -514,8 +578,7 @@ function AdminPanel({ showToast }) {
   useEffect(() => { loadAll(); }, []);
 
   async function loadAll() {
-    setLoading(true);
-    setLoadError("");
+    setLoading(true); setLoadError("");
     try {
       const loaded = await fbGetAllUsers();
       setUsers(loaded);
@@ -526,11 +589,8 @@ function AdminPanel({ showToast }) {
       }
       setUserBills(bmap);
     } catch(e) {
-      console.error("loadAll error:", e);
       setLoadError("Error al cargar usuarios: " + e.message + ". Revisá las reglas de Firestore.");
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   }
 
   async function toggleSuspend(u) {
@@ -584,9 +644,7 @@ function AdminPanel({ showToast }) {
 
   if (loading) return (
     <div className="empty">
-      <div style={{display:"flex",justifyContent:"center",marginBottom:16}}>
-        <span className="spinner" style={{width:32,height:32,borderWidth:3}}/>
-      </div>
+      <div style={{display:"flex",justifyContent:"center",marginBottom:16}}><span className="spinner" style={{width:32,height:32,borderWidth:3}}/></div>
       <div className="empty-title">Cargando panel...</div>
     </div>
   );
@@ -595,10 +653,7 @@ function AdminPanel({ showToast }) {
     <div>
       <div className="admin-banner">
         <span style={{fontSize:36}}>⚠️</span>
-        <div>
-          <div className="admin-banner-title" style={{color:"var(--danger)"}}>Error al cargar</div>
-          <div className="admin-banner-sub">{loadError}</div>
-        </div>
+        <div><div className="admin-banner-title" style={{color:"var(--danger)"}}>Error al cargar</div><div className="admin-banner-sub">{loadError}</div></div>
       </div>
       <div style={{marginBottom:16,padding:"16px",background:"var(--surface2)",borderRadius:12,fontSize:13,color:"var(--muted)"}}>
         <strong style={{color:"var(--text)"}}>Solución:</strong> En Firebase Console → Firestore → Reglas, asegurate de tener:
@@ -625,7 +680,7 @@ service cloud.firestore {
           <div className="admin-banner-title">Panel de Administración</div>
           <div className="admin-banner-sub">{MONTHS_FULL[today.getMonth()]} {today.getFullYear()} · Firebase 🔥</div>
         </div>
-        <div style={{marginLeft:"auto", display:"flex", gap:8}}>
+        <div style={{marginLeft:"auto",display:"flex",gap:8}}>
           <button className="btn btn-gold btn-sm" onClick={()=>setShowChangePass(true)}>🔑 Contraseña</button>
           <button className="btn btn-secondary btn-sm" onClick={loadAll}>🔄</button>
         </div>
@@ -660,9 +715,7 @@ service cloud.firestore {
                   </span>
                   <span style={{color:"var(--success)",fontFamily:"'Syne',sans-serif",fontWeight:700}}>{formatCurrency(s.totalPaid)}</span>
                 </div>
-                <div className="summary-bar">
-                  <div className="summary-fill" style={{width:`${pct}%`,background:"linear-gradient(90deg,var(--accent2),var(--gold))"}}/>
-                </div>
+                <div className="summary-bar"><div className="summary-fill" style={{width:`${pct}%`,background:"linear-gradient(90deg,var(--accent2),var(--gold))"}}/></div>
                 <div className="summary-row"><span>{s.paid}/{s.total} cuentas pagadas ({pct}%)</span></div>
               </div>
             );
@@ -674,10 +727,7 @@ service cloud.firestore {
         <>
           <input className="search-bar" placeholder="🔍  Buscar usuario..." value={search} onChange={e=>setSearch(e.target.value)}/>
           {filtered.length === 0 ? (
-            <div className="empty">
-              <div className="empty-icon">👤</div>
-              <div className="empty-title">{search ? "Sin resultados" : "Sin usuarios registrados"}</div>
-            </div>
+            <div className="empty"><div className="empty-icon">👤</div><div className="empty-title">{search?"Sin resultados":"Sin usuarios registrados"}</div></div>
           ) : filtered.map(u => {
             const s = getStats(u.username);
             const isExp = expanded === u.username;
@@ -687,10 +737,7 @@ service cloud.firestore {
                 <div className="user-top">
                   <div className="user-av" style={{background:userColor(u.username)}}>{(u.name||"?")[0].toUpperCase()}</div>
                   <div style={{flex:1}}>
-                    <div className="user-name-row">
-                      {u.name}
-                      <span className={`badge ${u.suspended?"badge-suspended":"badge-active"}`}>{u.suspended?"Suspendido":"Activo"}</span>
-                    </div>
+                    <div className="user-name-row">{u.name}<span className={`badge ${u.suspended?"badge-suspended":"badge-active"}`}>{u.suspended?"Suspendido":"Activo"}</span></div>
                     <div className="user-since">@{u.username} · Desde {u.createdAt ? new Date(u.createdAt).toLocaleDateString("es-PY") : "—"}</div>
                   </div>
                 </div>
@@ -739,18 +786,15 @@ service cloud.firestore {
             <div style={{color:"var(--muted)",fontSize:13,marginBottom:18}}>La nueva contraseña se guardará en Firebase.</div>
             <div className="field"><label>Nueva contraseña</label><input type="password" value={cp1} onChange={e=>setCp1(e.target.value)} placeholder="Mínimo 6 caracteres" style={{borderColor:"rgba(245,158,11,.3)"}}/></div>
             <div className="field"><label>Repetir contraseña</label><input type="password" value={cp2} onChange={e=>setCp2(e.target.value)} placeholder="Repetí la contraseña" style={{borderColor:"rgba(245,158,11,.3)"}}/></div>
-            {cpErr && <div style={{color:"var(--danger)",fontSize:13,marginBottom:12}}>⚠️ {cpErr}</div>}
+            {cpErr&&<div style={{color:"var(--danger)",fontSize:13,marginBottom:12}}>⚠️ {cpErr}</div>}
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={()=>{setShowChangePass(false);setCp1("");setCp2("");setCpErr("")}}>Cancelar</button>
               <button className="btn btn-gold" onClick={async()=>{
                 setCpErr("");
-                if (!cp1 || cp1.length < 6) { setCpErr("Mínimo 6 caracteres"); return; }
-                if (cp1 !== cp2) { setCpErr("Las contraseñas no coinciden"); return; }
-                try {
-                  await fbSetAdminConfig({ password: cp1, updatedAt: new Date().toISOString() });
-                  setShowChangePass(false); setCp1(""); setCp2("");
-                  showToast("Contraseña maestra actualizada ✅");
-                } catch(e) { setCpErr("Error al guardar: " + e.message); }
+                if (!cp1||cp1.length<6){setCpErr("Mínimo 6 caracteres");return;}
+                if (cp1!==cp2){setCpErr("Las contraseñas no coinciden");return;}
+                try { await fbSetAdminConfig({password:cp1,updatedAt:new Date().toISOString()}); setShowChangePass(false);setCp1("");setCp2(""); showToast("Contraseña maestra actualizada ✅"); }
+                catch(e){setCpErr("Error al guardar: "+e.message);}
               }}>Guardar</button>
             </div>
           </div>
@@ -774,10 +818,12 @@ service cloud.firestore {
   );
 }
 
-
+// ─── MAIN APP ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [user,setUser]=useState(null);
   const [bills,setBills]=useState([]);
+  const [incomes,setIncomes]=useState([]);
+  const [theme,setTheme]=useState(()=>{ try{ return localStorage.getItem("pagos_theme")||"dark"; }catch(e){ return "dark"; } });
   const [tab,setTab]=useState("dashboard");
   const [modal,setModal]=useState(null);
   const [toast,setToast]=useState(null);
@@ -792,15 +838,16 @@ export default function App() {
     if(s){
       const u=JSON.parse(s);
       setUser(u);
-      setTab(u.isAdmin ? "admin" : "dashboard");
-      if(!u.isAdmin) loadBillsFor(u.username);
+      setTab(u.isAdmin?"admin":"dashboard");
+      if(!u.isAdmin) loadUserData(u.username);
     }
     setLoading(false);
   },[]);
 
-  async function loadBillsFor(username) {
-    const b = await fbGetBills(username);
+  async function loadUserData(username) {
+    const [b, inc] = await Promise.all([fbGetBills(username), fbGetIncome(username)]);
     setBills(b);
+    setIncomes(inc);
     checkAndScheduleReminders(b);
   }
 
@@ -815,7 +862,6 @@ export default function App() {
         const reg = await navigator.serviceWorker.ready;
         const token = await getToken(messaging, { vapidKey: VAPID_KEY, serviceWorkerRegistration: reg });
         if (token) await fbSaveFCMToken(username, token);
-        // Listen for foreground messages
         onMessage(messaging, (payload) => {
           const {title, body} = payload.notification || {};
           showToast(`🔔 ${body || title}`, "info");
@@ -836,83 +882,141 @@ export default function App() {
     }
   }
 
-  function handleLogin(u){ setUser(u); sessionStorage.setItem("pagos_user",JSON.stringify(u)); setTab(u.isAdmin?"admin":"dashboard"); if(!u.isAdmin){ loadBillsFor(u.username); setupNotifications(u.username); } }
-  function handleLogout(){ setUser(null); sessionStorage.removeItem("pagos_user"); setBills([]); setTab("dashboard"); }
+  function handleLogin(u){
+    setUser(u);
+    sessionStorage.setItem("pagos_user",JSON.stringify(u));
+    setTab(u.isAdmin?"admin":"dashboard");
+    if(!u.isAdmin){ loadUserData(u.username); setupNotifications(u.username); }
+  }
+  function handleLogout(){
+    setUser(null);
+    sessionStorage.removeItem("pagos_user");
+    setBills([]); setIncomes([]); setTab("dashboard");
+  }
 
+  function toggleTheme(){
+    const next=theme==="dark"?"light":"dark";
+    setTheme(next);
+    try{ localStorage.setItem("pagos_theme",next); }catch(e){}
+  }
+
+  // ── Bills CRUD ──────────────────────────────────────────────────────────────
   async function saveBill(bill) {
     const exists=bills.find(b=>b.id===bill.id);
     const updated=exists?bills.map(b=>b.id===bill.id?bill:b):[...bills,bill];
-    setBills(updated);
-    await fbSetBills(user.username, updated);
-    setModal(null); showToast(exists?"Cuenta actualizada":"Cuenta agregada ✨");
+    setBills(updated); await fbSetBills(user.username,updated);
+    setModal(null); showToast(exists?"Gasto actualizado":"Gasto agregado ✨");
   }
   async function deleteBill(id) {
     const updated=bills.filter(b=>b.id!==id);
-    setBills(updated); await fbSetBills(user.username, updated);
-    showToast("Cuenta eliminada","info");
+    setBills(updated); await fbSetBills(user.username,updated);
+    showToast("Gasto eliminado","info");
   }
   async function savePayment(bill,y,m,payData) {
     const key=`${y}-${m}`;
     const updated=bills.map(b=>b.id===bill.id?{...b,payments:{...b.payments,[key]:payData}}:b);
-    setBills(updated); await fbSetBills(user.username, updated);
+    setBills(updated); await fbSetBills(user.username,updated);
     setModal(null); showToast("Pago registrado ✅");
   }
   async function removePayment(bill,y,m) {
     const key=`${y}-${m}`, np={...bill.payments}; delete np[key];
     const updated=bills.map(b=>b.id===bill.id?{...b,payments:np}:b);
-    setBills(updated); await fbSetBills(user.username, updated);
+    setBills(updated); await fbSetBills(user.username,updated);
     showToast("Pago revertido","info");
   }
 
+  // ── Income CRUD ─────────────────────────────────────────────────────────────
+  async function saveIncome(income) {
+    const exists=incomes.find(i=>i.id===income.id);
+    const updated=exists?incomes.map(i=>i.id===income.id?income:i):[...incomes,income];
+    setIncomes(updated); await fbSetIncome(user.username,updated);
+    setModal(null); showToast(exists?"Ingreso actualizado":"Ingreso agregado 💵");
+  }
+  async function deleteIncome(id) {
+    const updated=incomes.filter(i=>i.id!==id);
+    setIncomes(updated); await fbSetIncome(user.username,updated);
+    showToast("Ingreso eliminado","info");
+  }
+  async function saveReceipt(income,y,m,receiptData) {
+    const key=`${y}-${m}`;
+    const updated=incomes.map(i=>i.id===income.id?{...i,receipts:{...i.receipts,[key]:receiptData}}:i);
+    setIncomes(updated); await fbSetIncome(user.username,updated);
+    setModal(null); showToast("Ingreso registrado ✅");
+  }
+  async function removeReceipt(income,y,m) {
+    const key=`${y}-${m}`, nr={...income.receipts}; delete nr[key];
+    const updated=incomes.map(i=>i.id===income.id?{...i,receipts:nr}:i);
+    setIncomes(updated); await fbSetIncome(user.username,updated);
+    showToast("Ingreso revertido","info");
+  }
+
+  // ── Computed values ─────────────────────────────────────────────────────────
   const nowYear=today.getFullYear(), nowMonth=today.getMonth()+1;
   const viewKey=`${viewYear}-${viewMonth}`;
   const isPastMonth=(viewYear<nowYear)||(viewYear===nowYear&&viewMonth<nowMonth);
   const isFutureMonth=(viewYear>nowYear)||(viewYear===nowYear&&viewMonth>nowMonth);
 
-  // Meses pasados: solo mostrar cuentas con pago registrado
-  // Mes actual y futuros: mostrar todas las recurrentes
   const monthBills=bills.filter(b=>{
-    if(isPastMonth) return !!b.payments?.[viewKey]; // solo las que tienen pago real
+    if(isPastMonth) return !!b.payments?.[viewKey];
     return b.recurrent||b.payments?.[viewKey];
   });
+  const monthIncomes=incomes.filter(i=>{
+    if(isPastMonth) return !!i.receipts?.[viewKey];
+    return i.recurrent||i.receipts?.[viewKey];
+  });
 
-  // totalPaid: suma de montos realmente pagados este mes
   const totalPaid=monthBills.reduce((s,b)=>s+(b.payments?.[viewKey]?.amount||0),0);
-
-  // totalEst: para meses pasados usamos lo que se pagó (ya cerrado)
-  //           para mes actual/futuro usamos el estimado SOLO como referencia visual
-  //           pero el % se calcula sobre cuentas pagadas vs total de cuentas (no montos)
-  const totalEstRef=monthBills.reduce((s,b)=>s+(b.amount||0),0); // solo referencia
-  
+  const totalEstRef=monthBills.reduce((s,b)=>s+(b.amount||0),0);
   const totalCuentas=monthBills.length;
   const cuentasPagadas=monthBills.filter(b=>b.payments?.[viewKey]).length;
-  
-  // pct basado en cantidad de cuentas pagadas, no en montos (evita distorsión por monto variable)
   const pct=totalCuentas>0?Math.round((cuentasPagadas/totalCuentas)*100):isPastMonth?100:0;
   const pendientes=isPastMonth?0:monthBills.filter(b=>!b.payments?.[viewKey]).length;
-  
-  // Para mostrar en tarjetas
-  const totalEst=isPastMonth?totalPaid:totalEstRef;
+
+  const totalIncomeReceived=monthIncomes.reduce((s,i)=>s+(i.receipts?.[viewKey]?.amount||0),0);
+  const totalIncomeEst=monthIncomes.reduce((s,i)=>s+(i.amount||0),0);
+  const incomeCount=monthIncomes.length;
+  const incomeReceived=monthIncomes.filter(i=>i.receipts?.[viewKey]).length;
+
+  const balance=totalIncomeReceived - totalPaid;
+  const balancePositive=balance>=0;
 
   if (loading) return <><style>{CSS}</style><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#090d18",color:"#00e5ff",fontFamily:"Syne,sans-serif",fontSize:20,gap:14}}><span className="spinner" style={{width:28,height:28,borderWidth:3}}/>Cargando...</div></>;
-  if (!user) return <><style>{CSS}</style><AuthScreen onLogin={handleLogin}/></>;
+  if (!user) return <><style>{CSS}</style><div className={theme==="light"?"light":""}><button className="theme-btn" onClick={toggleTheme} style={{position:"fixed",top:16,right:16,zIndex:999}}>{theme==="dark"?"☀️":"🌙"}</button><AuthScreen onLogin={handleLogin}/></div></>;
 
+  // ── Render: History ──────────────────────────────────────────────────────────
   function renderHistory(){
     const all=[];
-    bills.forEach(b=>Object.entries(b.payments||{}).forEach(([k,p])=>{ const [y,m]=k.split("-").map(Number); all.push({bill:b,year:y,month:m,pay:p}); }));
+    bills.forEach(b=>Object.entries(b.payments||{}).forEach(([k,p])=>{ const [y,m]=k.split("-").map(Number); all.push({type:"gasto",item:b,year:y,month:m,pay:p}); }));
+    incomes.forEach(i=>Object.entries(i.receipts||{}).forEach(([k,r])=>{ const [y,m]=k.split("-").map(Number); all.push({type:"ingreso",item:i,year:y,month:m,pay:r}); }));
     all.sort((a,b)=>b.year-a.year||b.month-a.month);
     const grouped={};
     all.forEach(item=>{ const k=`${item.year}-${item.month}`; if(!grouped[k]) grouped[k]={year:item.year,month:item.month,items:[]}; grouped[k].items.push(item); });
     if(!Object.keys(grouped).length) return <div className="empty"><div className="empty-icon">📭</div><div className="empty-title">Sin historial aún</div></div>;
     return Object.values(grouped).map(g=>{
-      const total=g.items.reduce((s,i)=>s+(i.pay.amount||0),0);
+      const totalG=g.items.filter(x=>x.type==="gasto").reduce((s,i)=>s+(i.pay.amount||0),0);
+      const totalI=g.items.filter(x=>x.type==="ingreso").reduce((s,i)=>s+(i.pay.amount||0),0);
       return (
         <div className="month-group" key={`${g.year}-${g.month}`}>
-          <div className="month-title"><span>{MONTHS_FULL[g.month-1]} {g.year}</span><span style={{color:"var(--success)"}}>{formatCurrency(total)}</span></div>
-          {g.items.map(({bill,pay})=>(
-            <div className="history-row" key={bill.id}>
-              <div style={{display:"flex",alignItems:"center",gap:10}}><span>{getCatEmoji(bill.category)}</span><div><div style={{fontWeight:500}}>{bill.name}</div><div style={{fontSize:11,color:"var(--muted)"}}>Pagado el {formatDate(pay.date)}{pay.receipt?` · #${pay.receipt}`:""}</div></div></div>
-              <span style={{fontFamily:"'Syne',sans-serif",fontWeight:700,color:"var(--success)"}}>{formatCurrency(pay.amount)}</span>
+          <div className="month-title">
+            <span>{MONTHS_FULL[g.month-1]} {g.year}</span>
+            <span style={{display:"flex",gap:12}}>
+              <span style={{color:"var(--income)",fontSize:12}}>↑ {formatCurrency(totalI)}</span>
+              <span style={{color:"var(--danger)",fontSize:12}}>↓ {formatCurrency(totalG)}</span>
+            </span>
+          </div>
+          {g.items.map(({type,item,pay})=>(
+            <div className="history-row" key={`${type}-${item.id}`}>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span>{type==="gasto"?getCatEmoji(item.category):getIncCatEmoji(item.category)}</span>
+                <div>
+                  <div style={{fontWeight:500,display:"flex",alignItems:"center",gap:6}}>
+                    {item.name}
+                    <span style={{fontSize:10,padding:"1px 6px",borderRadius:10,background:type==="ingreso"?"rgba(34,211,238,.15)":"rgba(239,68,68,.12)",color:type==="ingreso"?"var(--income)":"var(--danger)"}}>{type==="ingreso"?"ingreso":"gasto"}</span>
+                  </div>
+                  <div style={{fontSize:11,color:"var(--muted)"}}>{type==="gasto"?`Pagado el ${formatDate(pay.date)}${pay.receipt?` · #${pay.receipt}`:""}`:(`Cobrado el ${formatDate(pay.date)}${pay.notes?` · ${pay.notes}`:""}`)}</div>
+                </div>
+              </div>
+              <span style={{fontFamily:"'Syne',sans-serif",fontWeight:700,color:type==="ingreso"?"var(--income)":"var(--success)"}}>{formatCurrency(pay.amount)}</span>
             </div>
           ))}
         </div>
@@ -920,22 +1024,36 @@ export default function App() {
     });
   }
 
+  // ── Render: Resumen ──────────────────────────────────────────────────────────
   function renderResumen(){
     const byMonth={};
-    bills.forEach(b=>Object.entries(b.payments||{}).forEach(([k,p])=>{ if(!byMonth[k]) byMonth[k]={paid:0,count:0}; byMonth[k].paid+=p.amount||0; byMonth[k].count+=1; }));
+    bills.forEach(b=>Object.entries(b.payments||{}).forEach(([k,p])=>{ if(!byMonth[k]) byMonth[k]={gastos:0,ingresos:0,countG:0,countI:0}; byMonth[k].gastos+=p.amount||0; byMonth[k].countG+=1; }));
+    incomes.forEach(i=>Object.entries(i.receipts||{}).forEach(([k,r])=>{ if(!byMonth[k]) byMonth[k]={gastos:0,ingresos:0,countG:0,countI:0}; byMonth[k].ingresos+=r.amount||0; byMonth[k].countI+=1; }));
     const sorted=Object.entries(byMonth).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,12);
-    const max=Math.max(...sorted.map(([,v])=>v.paid),1);
+    const max=Math.max(...sorted.map(([,v])=>Math.max(v.gastos,v.ingresos)),1);
     if(!sorted.length) return <div className="empty"><div className="empty-icon">📈</div><div className="empty-title">Sin datos aún</div></div>;
     return (
       <div>
         <div className="section-title" style={{marginBottom:20}}>📊 Resumen anual</div>
         {sorted.map(([key,val])=>{
           const [y,m]=key.split("-").map(Number);
+          const bal=val.ingresos-val.gastos;
           return (
-            <div key={key} style={{marginBottom:18}}>
-              <div className="summary-row" style={{marginBottom:4}}><span style={{fontWeight:600}}>{MONTHS_FULL[m-1]} {y}</span><span style={{color:"var(--success)",fontFamily:"'Syne',sans-serif",fontWeight:700}}>{formatCurrency(val.paid)}</span></div>
-              <div className="summary-bar"><div className="summary-fill" style={{width:`${Math.round((val.paid/max)*100)}%`,background:"linear-gradient(90deg,var(--accent2),var(--accent))"}}/></div>
-              <div className="summary-row"><span>{val.count} pago{val.count!==1?"s":""} registrado{val.count!==1?"s":""}</span></div>
+            <div key={key} style={{marginBottom:20,background:"var(--surface)",border:"1px solid var(--border)",borderRadius:14,padding:"14px 16px"}}>
+              <div className="summary-row" style={{marginBottom:8}}>
+                <span style={{fontWeight:600,fontFamily:"'Syne',sans-serif"}}>{MONTHS_FULL[m-1]} {y}</span>
+                <span style={{color:bal>=0?"var(--income)":"var(--danger)",fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:13}}>
+                  {bal>=0?`+${formatCurrency(bal)}`:formatCurrency(bal)}
+                </span>
+              </div>
+              {val.ingresos>0&&<>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--income)",marginBottom:3}}><span>↑ Ingresos ({val.countI})</span><span>{formatCurrency(val.ingresos)}</span></div>
+                <div className="summary-bar"><div className="summary-fill" style={{width:`${Math.round((val.ingresos/max)*100)}%`,background:"linear-gradient(90deg,rgba(34,211,238,.4),var(--income))"}}/></div>
+              </>}
+              {val.gastos>0&&<>
+                <div style={{display:"flex",justifyContent:"space-between",fontSize:11,color:"var(--danger)",marginBottom:3,marginTop:6}}><span>↓ Gastos ({val.countG})</span><span>{formatCurrency(val.gastos)}</span></div>
+                <div className="summary-bar"><div className="summary-fill" style={{width:`${Math.round((val.gastos/max)*100)}%`,background:"linear-gradient(90deg,var(--accent2),var(--danger))"}}/></div>
+              </>}
             </div>
           );
         })}
@@ -943,53 +1061,78 @@ export default function App() {
     );
   }
 
+  // ── Render: Month navigator ──────────────────────────────────────────────────
+  function renderMonthNav() {
+    return (
+      <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
+        <button className="btn btn-secondary btn-sm" onClick={()=>{if(viewMonth===1){setViewMonth(12);setViewYear(y=>y-1)}else setViewMonth(m=>m-1)}}>‹</button>
+        <span style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:16,flex:1,textAlign:"center"}}>{MONTHS_FULL[viewMonth-1]} {viewYear}</span>
+        <button className="btn btn-secondary btn-sm" onClick={()=>{if(viewMonth===12){setViewMonth(1);setViewYear(y=>y+1)}else setViewMonth(m=>m+1)}}>›</button>
+      </div>
+    );
+  }
+
+  // ── Render: Dashboard + Bills ────────────────────────────────────────────────
   function renderMain(){
     return (
       <>
-        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:20}}>
-          <button className="btn btn-secondary btn-sm" onClick={()=>{if(viewMonth===1){setViewMonth(12);setViewYear(y=>y-1)}else setViewMonth(m=>m-1)}}>‹</button>
-          <span style={{fontFamily:"'Syne',sans-serif",fontWeight:700,fontSize:16,flex:1,textAlign:"center"}}>{MONTHS_FULL[viewMonth-1]} {viewYear}</span>
-          <button className="btn btn-secondary btn-sm" onClick={()=>{if(viewMonth===12){setViewMonth(1);setViewYear(y=>y+1)}else setViewMonth(m=>m+1)}}>›</button>
-        </div>
+        {renderMonthNav()}
         {tab==="dashboard"&&(
           <>
-            {/* Notification banner */}
             {notifPerm !== "unsupported" && (
               <div className="notif-banner">
                 <div className="notif-banner-icon">🔔</div>
                 <div style={{flex:1}}>
                   <div className="notif-banner-title">Recordatorios de pago</div>
                   <div className="notif-banner-sub">
-                    {notifPerm==="granted" && <span className="notif-status notif-on">● Notificaciones activas</span>}
-                    {notifPerm==="default" && <span className="notif-status notif-off">○ Notificaciones desactivadas</span>}
-                    {notifPerm==="denied" && <span className="notif-status notif-blocked">✕ Bloqueadas en el navegador</span>}
+                    {notifPerm==="granted"&&<span className="notif-status notif-on">● Notificaciones activas</span>}
+                    {notifPerm==="default"&&<span className="notif-status notif-off">○ Notificaciones desactivadas</span>}
+                    {notifPerm==="denied"&&<span className="notif-status notif-blocked">✕ Bloqueadas en el navegador</span>}
                   </div>
                 </div>
-                {notifPerm!=="granted" && notifPerm!=="denied" && (
-                  <button className="btn btn-secondary btn-sm" onClick={enableNotifications}>Activar</button>
-                )}
-                {notifPerm==="granted" && (
-                  <button className="btn btn-secondary btn-sm" onClick={()=>checkAndScheduleReminders(bills)}>🔄 Verificar</button>
-                )}
+                {notifPerm!=="granted"&&notifPerm!=="denied"&&<button className="btn btn-secondary btn-sm" onClick={enableNotifications}>Activar</button>}
+                {notifPerm==="granted"&&<button className="btn btn-secondary btn-sm" onClick={()=>checkAndScheduleReminders(bills)}>🔄 Verificar</button>}
               </div>
             )}
+
+            {/* Balance card */}
+            <div className="dash-grid" style={{marginBottom:16}}>
+              <div className={`dash-card ${balancePositive?"balance-pos":"balance-neg"}`}>
+                <div className="dash-label">{balancePositive?"✅":"⚠️"} Balance del mes</div>
+                <div style={{display:"flex",alignItems:"baseline",gap:12,flexWrap:"wrap"}}>
+                  <div className={`dash-value ${balancePositive?"c-success":"c-danger"}`} style={{fontSize:22}}>
+                    {balancePositive?"+ ":"- "}{formatCurrency(Math.abs(balance))}
+                  </div>
+                  <div style={{fontSize:12,color:"var(--muted)"}}>
+                    {formatCurrency(totalIncomeReceived)} cobrado · {formatCurrency(totalPaid)} pagado
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <ProgressRing pct={pct}/>
+
             <div className="dash-grid">
-              {!isPastMonth&&<div className="dash-card"><div className="dash-label">Estimado del mes</div><div className="dash-value c-accent" style={{fontSize:18}}>{formatCurrency(totalEstRef)}</div></div>}
-              <div className="dash-card"><div className="dash-label">{isPastMonth?"Total pagado":"Pagado hasta ahora"}</div><div className="dash-value c-success" style={{fontSize:18}}>{formatCurrency(totalPaid)}</div></div>
+              {/* Gastos */}
+              {!isPastMonth&&<div className="dash-card"><div className="dash-label">Gastos estimados</div><div className="dash-value c-accent" style={{fontSize:18}}>{formatCurrency(totalEstRef)}</div></div>}
+              <div className="dash-card"><div className="dash-label">{isPastMonth?"Gastos pagados":"Pagado hasta ahora"}</div><div className="dash-value c-danger" style={{fontSize:18}}>{formatCurrency(totalPaid)}</div></div>
               <div className="dash-card"><div className="dash-label">Cuentas pagadas</div><div className={`dash-value ${cuentasPagadas===totalCuentas?"c-success":"c-warning"}`}>{cuentasPagadas}/{totalCuentas}</div></div>
               {!isPastMonth&&<div className="dash-card"><div className="dash-label">Pendientes</div><div className={`dash-value ${pendientes>0?"c-warning":"c-success"}`}>{pendientes}</div></div>}
+              {/* Ingresos */}
+              {!isPastMonth&&<div className="dash-card income-card"><div className="dash-label">Ingresos estimados</div><div className="dash-value c-income" style={{fontSize:18}}>{formatCurrency(totalIncomeEst)}</div></div>}
+              <div className="dash-card income-card"><div className="dash-label">{isPastMonth?"Ingresos cobrados":"Cobrado hasta ahora"}</div><div className="dash-value c-income" style={{fontSize:18}}>{formatCurrency(totalIncomeReceived)}</div></div>
+              <div className="dash-card income-card"><div className="dash-label">Ingresos recibidos</div><div className={`dash-value ${incomeReceived===incomeCount&&incomeCount>0?"c-income":"c-muted"}`} style={{color:incomeReceived===incomeCount&&incomeCount>0?"var(--income)":"var(--muted)"}}>{incomeReceived}/{incomeCount}</div></div>
             </div>
           </>
         )}
         <div className="bills-header">
-          <div className="section-title">{tab==="dashboard"?"Este mes":"Mis cuentas"}</div>
-          <button className="btn btn-primary btn-sm" onClick={()=>setModal({type:"bill",data:null})}>+ Nueva</button>
+          <div className="section-title">{tab==="dashboard"?"Gastos del mes":"Mis gastos"}</div>
+          <button className="btn btn-primary btn-sm" onClick={()=>setModal({type:"bill",data:null})}>+ Nuevo</button>
         </div>
         {monthBills.length===0?(
-          <div className="empty"><div className="empty-icon">🧾</div><div className="empty-title">Sin cuentas</div><p style={{marginBottom:20}}>Agregá tus cuentas para comenzar</p><button className="btn btn-primary" onClick={()=>setModal({type:"bill",data:null})}>+ Agregar cuenta</button></div>
+          <div className="empty"><div className="empty-icon">🧾</div><div className="empty-title">Sin gastos</div><p style={{marginBottom:20}}>Agregá tus gastos para comenzar</p><button className="btn btn-primary" onClick={()=>setModal({type:"bill",data:null})}>+ Agregar gasto</button></div>
         ):monthBills.map(bill=>{
-          const status=getBillStatus(bill,viewYear,viewMonth), pay=bill.payments?.[`${viewYear}-${viewMonth}`];
+          const status=getBillStatus(bill,viewYear,viewMonth), pay=bill.payments?.[viewKey];
           return (
             <div key={bill.id} className={`bill-item ${status}`}>
               <div className="bill-icon">{getCatEmoji(bill.category)}</div>
@@ -1011,18 +1154,84 @@ export default function App() {
     );
   }
 
+  // ── Render: Ingresos ─────────────────────────────────────────────────────────
+  function renderIncomes(){
+    return (
+      <>
+        {renderMonthNav()}
+        {/* Stats banner */}
+        <div className="dash-grid" style={{marginBottom:20}}>
+          {!isPastMonth&&<div className="dash-card income-card"><div className="dash-label">Ingresos esperados</div><div className="dash-value c-income" style={{fontSize:18}}>{formatCurrency(totalIncomeEst)}</div></div>}
+          <div className="dash-card income-card"><div className="dash-label">{isPastMonth?"Total cobrado":"Cobrado hasta ahora"}</div><div className="dash-value c-income" style={{fontSize:18}}>{formatCurrency(totalIncomeReceived)}</div></div>
+          <div className="dash-card income-card"><div className="dash-label">Recibidos</div><div className={`dash-value`} style={{color:incomeReceived===incomeCount&&incomeCount>0?"var(--income)":"var(--muted)"}}>{incomeReceived}/{incomeCount}</div></div>
+          {!isPastMonth&&<div className="dash-card income-card"><div className="dash-label">Por cobrar</div><div className="dash-value" style={{color:"var(--muted)"}}>{incomeCount-incomeReceived}</div></div>}
+        </div>
+
+        <div className="bills-header">
+          <div className="section-title">💵 Mis ingresos</div>
+          <button className="btn btn-income btn-sm" onClick={()=>setModal({type:"income",data:null})}>+ Nuevo</button>
+        </div>
+
+        {monthIncomes.length===0?(
+          <div className="empty">
+            <div className="empty-icon">💵</div>
+            <div className="empty-title">Sin ingresos registrados</div>
+            <p style={{marginBottom:20}}>Agregá tus fuentes de ingreso para ver tu balance</p>
+            <button className="btn btn-income" onClick={()=>setModal({type:"income",data:null})}>+ Agregar ingreso</button>
+          </div>
+        ):monthIncomes.map(income=>{
+          const status=getIncomeStatus(income,viewYear,viewMonth);
+          const receipt=income.receipts?.[viewKey];
+          return (
+            <div key={income.id} className={`income-item ${status}`}>
+              <div className="bill-icon" style={{background:"rgba(34,211,238,.08)"}}>{getIncCatEmoji(income.category)}</div>
+              <div className="bill-info">
+                <div className="bill-name">{income.name}</div>
+                <div className="bill-meta">
+                  Día {income.receiveDay} · {getIncCatLabel(income.category)}
+                  {receipt&&<span style={{marginLeft:8,color:"var(--income)"}}>· Cobrado {formatDate(receipt.date)}</span>}
+                </div>
+                <span className={`badge ${status==="received"?"badge-received":status==="pending"?"badge-pending":"badge-upcoming"}`}>
+                  {status==="received"?"Recibido":status==="pending"?"Por cobrar":"Próximo"}
+                </span>
+              </div>
+              <div className="bill-amount" style={{color:status==="received"?"var(--income)":isFutureMonth?"var(--muted)":"var(--text)"}}>{formatCurrency(receipt?receipt.amount:income.amount)}</div>
+              <div className="bill-actions">
+                {status!=="received"
+                  ?<button className="btn btn-income btn-sm" onClick={()=>setModal({type:"receive",data:income})}>Cobrar</button>
+                  :<button className="btn btn-secondary btn-sm" onClick={()=>removeReceipt(income,viewYear,viewMonth)}>↩</button>
+                }
+                <button className="btn btn-secondary btn-sm" onClick={()=>setModal({type:"income",data:income})}>✏️</button>
+                <button className="btn btn-danger btn-sm" onClick={()=>deleteIncome(income.id)}>🗑</button>
+              </div>
+            </div>
+          );
+        })}
+      </>
+    );
+  }
+
   const navItems=user.isAdmin
     ?[{id:"admin",label:"🔐 Panel Admin",cls:"admin-nav"}]
-    :[{id:"dashboard",label:"📊 Dashboard"},{id:"bills",label:"🧾 Cuentas"},{id:"history",label:"📖 Historial"},{id:"resumen",label:"📈 Resumen"}];
+    :[
+        {id:"dashboard",label:"📊 Dashboard"},
+        {id:"bills",label:"🧾 Gastos"},
+        {id:"incomes",label:"💵 Ingresos",cls:"income-nav"},
+        {id:"history",label:"📖 Historial"},
+        {id:"resumen",label:"📈 Resumen"},
+      ];
 
   return (
     <>
       <style>{CSS}</style>
-      <div className="app">
+      <div className={`app${theme==="light"?" light":""}`}>
         <div className="header">
           <div className="header-logo">💰 PagosApp</div>
           <div className="header-right">
             {user.isAdmin&&<span className="admin-badge">Admin</span>}
+            <button className="theme-btn" onClick={toggleTheme} title={theme==="dark"?"Cambiar a tema claro":"Cambiar a tema oscuro"}>
+              {theme==="dark"?"☀️":"🌙"}
+            </button>
             <div className={`avatar ${user.isAdmin?"avatar-admin":"avatar-user"}`}>{user.name[0].toUpperCase()}</div>
             <button className="btn btn-secondary btn-sm" onClick={handleLogout}>Salir</button>
           </div>
@@ -1032,6 +1241,7 @@ export default function App() {
         </div>
         <div className="main">
           {!user.isAdmin&&(tab==="dashboard"||tab==="bills")&&renderMain()}
+          {!user.isAdmin&&tab==="incomes"&&renderIncomes()}
           {!user.isAdmin&&tab==="history"&&renderHistory()}
           {!user.isAdmin&&tab==="resumen"&&renderResumen()}
           {user.isAdmin&&tab==="admin"&&<AdminPanel showToast={showToast}/>}
@@ -1039,6 +1249,8 @@ export default function App() {
       </div>
       {modal?.type==="bill"&&<BillModal bill={modal.data} onSave={saveBill} onClose={()=>setModal(null)} notifEnabled={notifPerm==="granted"}/>}
       {modal?.type==="pay"&&<PayModal bill={modal.data} year={viewYear} month={viewMonth} onSave={p=>savePayment(modal.data,viewYear,viewMonth,p)} onClose={()=>setModal(null)}/>}
+      {modal?.type==="income"&&<IncomeModal income={modal.data} onSave={saveIncome} onClose={()=>setModal(null)}/>}
+      {modal?.type==="receive"&&<ReceiveModal income={modal.data} year={viewYear} month={viewMonth} onSave={r=>saveReceipt(modal.data,viewYear,viewMonth,r)} onClose={()=>setModal(null)}/>}
       {toast&&<Toast msg={toast.msg} type={toast.type}/>}
     </>
   );
