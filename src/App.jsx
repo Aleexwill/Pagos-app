@@ -247,6 +247,26 @@ body{background:var(--bg);color:var(--text);font-family:var(--fb);min-height:100
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 @keyframes scaleIn{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}
 @media(max-width:520px){.main{padding:12px}.dash-grid{grid-template-columns:1fr 1fr}.bill-actions{flex-direction:column}.dash-card.balance-pos,.dash-card.balance-neg{grid-column:unset}}
+
+/* ── Light theme ── */
+.light{
+  --bg:#f0f5ff;--surface:#ffffff;--surface2:#eef2ff;--border:#d4ddf7;
+  --text:#0f172a;--muted:#64748b;
+}
+.light body{background:var(--bg);color:var(--text)}
+.light .auth-wrap{background:radial-gradient(ellipse at 25% 25%,#dbeafe 0%,var(--bg) 55%),radial-gradient(ellipse at 80% 75%,#ede9fe 0%,transparent 50%)}
+.light .field input,.light .field select{background:var(--surface2);border-color:var(--border);color:var(--text)}
+.light .field select option{background:var(--surface)}
+.light .search-bar{background:var(--surface2);color:var(--text)}
+.light .modal{box-shadow:0 8px 40px rgba(0,0,0,.12)}
+.light .summary-bar{background:var(--surface2)}
+.light .toast{box-shadow:0 4px 20px rgba(0,0,0,.12)}
+.light .user-stat{background:var(--surface2)}
+.light .btn-secondary{background:var(--surface2);color:var(--text);border-color:var(--border)}
+.light .btn-secondary:hover{background:var(--border)}
+.light .notif-banner{background:linear-gradient(135deg,rgba(99,102,241,.07),rgba(0,229,255,.03));border-color:rgba(99,102,241,.2)}
+.theme-btn{width:32px;height:32px;border-radius:50%;border:1px solid var(--border);background:var(--surface2);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:15px;transition:all .2s;flex-shrink:0}
+.theme-btn:hover{background:var(--border)}
 `;
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -803,6 +823,7 @@ export default function App() {
   const [user,setUser]=useState(null);
   const [bills,setBills]=useState([]);
   const [incomes,setIncomes]=useState([]);
+  const [theme,setTheme]=useState(()=>{ try{ return localStorage.getItem("pagos_theme")||"dark"; }catch(e){ return "dark"; } });
   const [tab,setTab]=useState("dashboard");
   const [modal,setModal]=useState(null);
   const [toast,setToast]=useState(null);
@@ -871,6 +892,12 @@ export default function App() {
     setUser(null);
     sessionStorage.removeItem("pagos_user");
     setBills([]); setIncomes([]); setTab("dashboard");
+  }
+
+  function toggleTheme(){
+    const next=theme==="dark"?"light":"dark";
+    setTheme(next);
+    try{ localStorage.setItem("pagos_theme",next); }catch(e){}
   }
 
   // ── Bills CRUD ──────────────────────────────────────────────────────────────
@@ -954,7 +981,7 @@ export default function App() {
   const balancePositive=balance>=0;
 
   if (loading) return <><style>{CSS}</style><div style={{minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",background:"#090d18",color:"#00e5ff",fontFamily:"Syne,sans-serif",fontSize:20,gap:14}}><span className="spinner" style={{width:28,height:28,borderWidth:3}}/>Cargando...</div></>;
-  if (!user) return <><style>{CSS}</style><AuthScreen onLogin={handleLogin}/></>;
+  if (!user) return <><style>{CSS}</style><div className={theme==="light"?"light":""}><button className="theme-btn" onClick={toggleTheme} style={{position:"fixed",top:16,right:16,zIndex:999}}>{theme==="dark"?"☀️":"🌙"}</button><AuthScreen onLogin={handleLogin}/></div></>;
 
   // ── Render: History ──────────────────────────────────────────────────────────
   function renderHistory(){
@@ -1197,11 +1224,14 @@ export default function App() {
   return (
     <>
       <style>{CSS}</style>
-      <div className="app">
+      <div className={`app${theme==="light"?" light":""}`}>
         <div className="header">
           <div className="header-logo">💰 PagosApp</div>
           <div className="header-right">
             {user.isAdmin&&<span className="admin-badge">Admin</span>}
+            <button className="theme-btn" onClick={toggleTheme} title={theme==="dark"?"Cambiar a tema claro":"Cambiar a tema oscuro"}>
+              {theme==="dark"?"☀️":"🌙"}
+            </button>
             <div className={`avatar ${user.isAdmin?"avatar-admin":"avatar-user"}`}>{user.name[0].toUpperCase()}</div>
             <button className="btn btn-secondary btn-sm" onClick={handleLogout}>Salir</button>
           </div>
